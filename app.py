@@ -22,57 +22,94 @@ except AttributeError:
 else:
     ssl._create_default_https_context = _create_unverified_context
 
-# List of NLTK data packages to download
-nltk_packages = ['punkt', 'stopwords', 'wordnet']
-
 @st.cache_resource
 def download_nltk_data():
-    """Download NLTK data packages with caching"""
-    for package in nltk_packages:
+    """Download NLTK data packages with caching and version compatibility"""
+    # List of NLTK packages to try (both old and new versions)
+    nltk_packages = [
+        ('punkt_tab', 'punkt'),  # Try punkt_tab first, fallback to punkt
+        ('stopwords', None),
+        ('wordnet', None),
+        ('omw-1.4', None)  # Additional wordnet data
+    ]
+    
+    success = True
+    for primary, fallback in nltk_packages:
         try:
-            # Check different possible paths for the package
-            if package == 'punkt':
-                nltk.data.find('tokenizers/punkt')
-            elif package == 'stopwords':
-                nltk.data.find('corpora/stopwords')
-            elif package == 'wordnet':
-                nltk.data.find('corpora/wordnet')
-        except LookupError:
-            try:
-                nltk.download(package, download_dir=nltk_data_path, quiet=True)
-            except Exception as e:
-                st.error(f"Error downloading NLTK package {package}: {e}")
-                return False
-    return True
+            # Try to download the primary package
+            nltk.download(primary, download_dir=nltk_data_path, quiet=True)
+        except Exception as e1:
+            if fallback:
+                try:
+                    # Try fallback package
+                    nltk.download(fallback, download_dir=nltk_data_path, quiet=True)
+                except Exception as e2:
+                    st.warning(f"Could not download {primary} or {fallback}: {e2}")
+                    success = False
+            else:
+                try:
+                    nltk.download(primary, download_dir=nltk_data_path, quiet=True)
+                except:
+                    st.warning(f"Could not download {primary}")
+                    success = False
+    
+    return success
 
 # Download NLTK data
 if not download_nltk_data():
-    st.error("Failed to download required NLTK data. App may not function correctly.")
-    st.stop()
+    st.warning("Some NLTK data may be missing, but trying to continue...")
 
-# Initialize NLTK components
-try:
-    stop_words = set(stopwords.words('english'))
-    lemmatizer = WordNetLemmatizer()
-except Exception as e:
-    st.error(f"Error initializing NLTK components: {e}")
-    st.stop()
+# Initialize NLTK components with error handling
+@st.cache_resource
+def init_nltk_components():
+    """Initialize NLTK components with error handling"""
+    try:
+        stop_words = set(stopwords.words('english'))
+        lemmatizer = WordNetLemmatizer()
+        return stop_words, lemmatizer, True
+    except Exception as e:
+        st.error(f"Error initializing NLTK components: {e}")
+        return set(), None, False
+
+stop_words, lemmatizer, nltk_ready = init_nltk_components()
 
 def clean_text(text):
-    """Clean and preprocess text"""
+    """Clean and preprocess text with better error handling"""
     try:
-        # Lowercase
+        if not nltk_ready:
+            # Fallback: basic cleaning without NLTK
+            text = text.lower()
+            text = text.translate(str.maketrans('', '', string.punctuation))
+            words = text.split()
+            # Basic stopwords list as fallback
+            basic_stopwords = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should'}
+            cleaned_words = [word for word in words if word not in basic_stopwords and len(word) > 1]
+            return ' '.join(cleaned_words)
+        
+        # Regular NLTK processing
         text = text.lower()
-        # Remove punctuation
         text = text.translate(str.maketrans('', '', string.punctuation))
-        # Tokenize
-        tokens = nltk.word_tokenize(text)
+        
+        # Try tokenization with error handling
+        try:
+            tokens = nltk.word_tokenize(text)
+        except Exception:
+            # Fallback to simple split if tokenizer fails
+            tokens = text.split()
+        
         # Remove stopwords and lemmatize
-        cleaned_tokens = [lemmatizer.lemmatize(word) for word in tokens if word not in stop_words]
-        # Join tokens back into a string
+        if lemmatizer:
+            cleaned_tokens = [lemmatizer.lemmatize(word) for word in tokens if word not in stop_words and len(word) > 1]
+        else:
+            cleaned_tokens = [word for word in tokens if word not in stop_words and len(word) > 1]
+        
         return ' '.join(cleaned_tokens)
+        
     except Exception as e:
         st.error(f"Error cleaning text: {e}")
+        # Return basic cleaned version as fallback
+        text = text.lower()
+        text = ''.join(c for c in text if c.isalnum() or c.isspace())
         return text
 
 @st.cache_resource
@@ -114,6 +151,12 @@ categories = ['business', 'entertainment', 'politics', 'sport', 'tech']
 
 st.title("BBC News Article Classifier")
 st.write("Enter a news article to classify its category.")
+
+# Show NLTK status
+if not nltk_ready:
+    st.warning("⚠️ Using basic text processing (NLTK components not fully loaded)")
+else:
+    st.success("✅ All text processing components loaded successfully")
 
 # Text input area
 article_text = st.text_area("Enter Article Text", height=300, 
@@ -176,5 +219,6 @@ with st.expander("📝 Try with example text"):
     driven by robust iPhone sales and growing services revenue. The company's stock 
     price rose 5% in after-hours trading following the announcement.
     """
+    st.text_area("Example:", example_text, height=100, disabled=True)
     if st.button("Use this example"):
         st.rerun()
